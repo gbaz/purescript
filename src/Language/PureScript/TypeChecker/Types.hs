@@ -548,6 +548,12 @@ check' (Constructor c) ty = do
       repl <- introduceSkolemScope <=< replaceAllTypeSynonyms $ ty1
       _ <- subsumes Nothing repl ty
       return $ TypedValue True (Constructor c) ty
+
+--Desugaring Here
+check' (TypeClassInstanceMemberFunction funName className t) ty
+    | funName == Ident "toSpine" && unQualify className == ProperName "Generic" = flip check' ty =<< mkSpineFunction t
+    | otherwise = throwError . errorMessage $ ErrorInInstance className [TypeConstructor t] (MissingClassMember (Ident "funName"))
+
 check' (Let ds val) ty = do
   (ds', val') <- inferLetBinding [] ds val (`check` ty)
   return $ TypedValue True (Let ds' val') ty
@@ -566,6 +572,31 @@ containsTypeSynonyms :: Type -> Bool
 containsTypeSynonyms = everythingOnTypes (||) go where
   go (SaturatedTypeSynonym _ _) = True
   go _ = False
+
+mkSpineFunction t = do
+  ctors <- M.toList . dataConstructors <$> getEnv
+  let
+      ctorFilter (Qualified mmn _ ,(_,typeName,_,_)) = t == Qualified mmn typeName
+
+      argTypes (TypeApp (TypeApp (TypeConstructor (Qualified (Just (ModuleName [ProperName "Prim"])) (ProperName "Function"))) a) b) = a : argTypes b
+      argTypes x = [x]
+
+      primTypes = map (TypeConstructor . primName) ["Number","String"]
+
+      -- TODO add constructors + multiArg handling via SProd.
+      -- After that just records?
+      -- And then... fromSpine and getSpineSig
+
+      mkCtorClause (ctorName, (_,_,typ,idents)) = CaseAlternative [ConstructorBinder ctorName (map VarBinder idents)] (Right caseResult)
+          where caseResult = toSpineFun (head idents) --foldl' App (Constructor ctorName) (zipWith toSpineFun idents (init $ argTypes typ))
+                toSpineFun i =  App (Var (Qualified Nothing (Ident "toSpine"))) (Var (Qualified Nothing i))
+--                    | typ `elem` primTypes = Var (Qualified Nothing i)
+
+  -- error . prettyPrintValue
+  return . Abs (Left (Ident "x")) $ Case [(Var (Qualified Nothing (Ident "x")))] . map mkCtorClause . filter ctorFilter $ ctors
+
+unQualify (Qualified _ a) = a
+
 
 -- |
 -- Check the type of a collection of named record fields
