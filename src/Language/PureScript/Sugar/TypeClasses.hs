@@ -232,12 +232,13 @@ unit = TypeApp tyObject REmpty
 fillDerivingDecls :: (MonadError MultipleErrors m, Applicative m) => Qualified ProperName -> [Type] -> [Declaration] -> [Declaration] -> Desugar m [Declaration]
 fillDerivingDecls className tys tyDecls decls = do
   let missingDecls = mapMaybe declName tyDecls \\ mapMaybe declName decls
-  let mkSpineDecl =
+  let mkMissingDecl cls fun =
           case tys of
-            [TypeConstructor t] | unQualify className == ProperName "Generic" && Ident "toSpine" `elem` missingDecls -> return [ValueDeclaration (Ident "toSpine") Value [] (Right $ TypeClassInstanceMemberFunction (Ident "toSpine") className t)]
+            [TypeConstructor t] | unQualify className == ProperName cls && Ident fun `elem` missingDecls -> return [ValueDeclaration (Ident fun) Value [] (Right $ TypeClassInstanceMemberFunction (Ident fun) className t)]
             _ -> return []
-  spineDecl <- mkSpineDecl
-  return $ spineDecl ++ decls
+  spineDecl <- mkMissingDecl "Generic" "toSpine"
+  sigDecl <- mkMissingDecl "Generic" "toSignature"
+  return $ spineDecl ++ sigDecl ++ decls
  where
     declName :: Declaration -> Maybe Ident
     declName (PositionedDeclaration _ _ d) = declName d

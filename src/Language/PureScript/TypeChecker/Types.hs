@@ -549,10 +549,10 @@ check' (Constructor c) ty = do
       _ <- subsumes Nothing repl ty
       return $ TypedValue True (Constructor c) ty
 
---Desugaring Here
 check' (TypeClassInstanceMemberFunction funName className t) ty
     | funName == Ident "toSpine" && unQualify className == ProperName "Generic" = flip check' ty =<< mkSpineFunction t
-    | otherwise = throwError . errorMessage $ ErrorInInstance className [TypeConstructor t] (MissingClassMember (Ident "funName"))
+    | funName == Ident "toSignature" && unQualify className == ProperName "Generic" = flip check' ty =<< mkSignatureFunction t
+    | otherwise = throwError . errorMessage $ ErrorInInstance className [TypeConstructor t] (MissingClassMember funName)
 
 check' (Let ds val) ty = do
   (ds', val') <- inferLetBinding [] ds val (`check` ty)
@@ -573,29 +573,53 @@ containsTypeSynonyms = everythingOnTypes (||) go where
   go (SaturatedTypeSynonym _ _) = True
   go _ = False
 
+-- TODO: implement fromSpine, factor this into its own module.
+mkSpineFunction :: Qualified ProperName -> UnifyT Type Check Expr
 mkSpineFunction t = do
   ctors <- M.toList . dataConstructors <$> getEnv
-  let
-      ctorFilter (Qualified mmn _ ,(_,typeName,_,_)) = t == Qualified mmn typeName
-
-      argTypes (TypeApp (TypeApp (TypeConstructor (Qualified (Just (ModuleName [ProperName "Prim"])) (ProperName "Function"))) a) b) = a : argTypes b
-      argTypes x = [x]
-
-      primTypes = map (TypeConstructor . primName) ["Number","String"]
-
-      -- TODO add constructors + multiArg handling via SProd.
-      -- After that just records?
-      -- And then... fromSpine and getSpineSig
+  let ctorFilter (Qualified mmn _ ,(_,typeName,_,_)) = t == Qualified mmn typeName
+      prodConstructor = App (Constructor $ findName "SProd" ctors)
+      recordConstructor = App (Constructor $ findName "SRecord" ctors)
 
       mkCtorClause (ctorName, (_,_,typ,idents)) = CaseAlternative [ConstructorBinder ctorName (map VarBinder idents)] (Right caseResult)
-          where caseResult = toSpineFun (head idents) --foldl' App (Constructor ctorName) (zipWith toSpineFun idents (init $ argTypes typ))
-                toSpineFun i =  App (Var (Qualified Nothing (Ident "toSpine"))) (Var (Qualified Nothing i))
---                    | typ `elem` primTypes = Var (Qualified Nothing i)
+          where caseResult = App (prodConstructor (StringLiteral . runProperName . unQualify $ ctorName)) . ArrayLiteral $ zipWith toSpineFun (map (Var . Qualified Nothing) idents) (argTypes typ)
 
-  -- error . prettyPrintValue
+      toSpineFun :: Expr -> Type -> Expr
+      toSpineFun i (TypeApp (TypeConstructor (Qualified (Just (ModuleName [ProperName "Prim"])) (ProperName "Object"))) rec) = Abs (Left $ Ident "q") . recordConstructor . ArrayLiteral $ recordPairs i rec
+      toSpineFun i typ = Abs (Left $ Ident "q") $ App (mkVar "toSpine") i
+
+      recordPairs i (RCons str typ typs) = ObjectLiteral [("recLabel", StringLiteral str), ("recValue", toSpineFun (Accessor str i) typ)] : recordPairs i typs
+      recordPairs _ _ = []
+
   return . Abs (Left (Ident "x")) $ Case [(Var (Qualified Nothing (Ident "x")))] . map mkCtorClause . filter ctorFilter $ ctors
 
-unQualify (Qualified _ a) = a
+mkSignatureFunction :: Qualified ProperName -> UnifyT Type Check Expr
+mkSignatureFunction t = do
+  ctors <- M.toList . dataConstructors <$> getEnv
+  typs <- M.toList . types <$> getEnv
+  let ctorFilter (Qualified mmn _ ,(_,typeName,_,_)) = t == Qualified mmn typeName
+      mkSigProd = App (Constructor $ findName "SigProd" ctors) . ArrayLiteral
+      mkSigRec =  App (Constructor $ findName "SigRecord" ctors) . ArrayLiteral
+
+      mkProdClause (ctorName, (_,_,typ,_)) = ObjectLiteral [("sigConstructor",StringLiteral (runProperName . unQualify $ ctorName)),("sigValues", ArrayLiteral . map mkProductSignature . argTypes $ typ)]
+
+      mkProductSignature (TypeApp (TypeConstructor (Qualified (Just (ModuleName [ProperName "Prim"])) (ProperName "Object"))) rec) = Abs (Left $ Ident "q") . mkSigRec $ decomposeRec rec
+      mkProductSignature typ = Abs (Left (Ident "q")) $ App (mkVar "toSignature") (TypedValue False (mkVar "anyProxy") (TypeApp (TypeConstructor $ findName "Proxy" typs) typ))
+
+      decomposeRec (RCons str typ typs) = ObjectLiteral [("recLabel", StringLiteral str), ("recValue", mkProductSignature typ)] : decomposeRec typs
+      decomposeRec _ = []
+
+  return . Abs (Left (Ident "S")) . mkSigProd . map mkProdClause . filter ctorFilter $ ctors
+
+mkVar s = Var (Qualified Nothing (Ident s))
+
+argTypes (TypeApp (TypeApp (TypeConstructor (Qualified (Just (ModuleName [ProperName "Prim"])) (ProperName "Function"))) a) b) = a : argTypes b
+argTypes x = []
+
+findName s lst = fromMaybe (Qualified Nothing (ProperName s)) . find ((== ProperName s) . unQualify) . map fst $ lst
+
+unQualify :: Qualified a -> a
+unQualify (Qualified _ x) = x
 
 
 -- |
