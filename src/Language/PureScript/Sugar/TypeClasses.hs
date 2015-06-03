@@ -236,9 +236,11 @@ fillDerivingDecls className tys tyDecls decls = do
           case tys of
             [TypeConstructor t] | unQualify className == ProperName cls && Ident fun `elem` missingDecls -> return [ValueDeclaration (Ident fun) Value [] (Right $ TypeClassInstanceMemberFunction (Ident fun) className t)]
             _ -> return []
-  spineDecl <- mkMissingDecl "Generic" "toSpine"
-  sigDecl <- mkMissingDecl "Generic" "toSignature"
-  return $ spineDecl ++ sigDecl ++ decls
+  extraDecls <- concat <$> mapM (uncurry mkMissingDecl)
+                  [("Generic","toSpine")
+                  ,("Generic","fromSpine")
+                  ,("Generic","toSignature")]
+  return $ extraDecls ++ decls
  where
     declName :: Declaration -> Maybe Ident
     declName (PositionedDeclaration _ _ d) = declName d
